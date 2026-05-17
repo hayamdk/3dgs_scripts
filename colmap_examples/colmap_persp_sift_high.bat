@@ -1,0 +1,39 @@
+cd /D D:\path_to_data\f2p
+
+set IMAGE_PATH=images
+set MASK_PATH=masks
+set SPARSE_DIR=sparse
+set DBFILE=database.db
+set RIG_CONFIG=rig_config.json
+
+mkdir %SPARSE_DIR%
+
+colmap feature_extractor ^
+	--database_path %DBFILE% ^
+	--image_path %IMAGE_PATH% ^
+	--SiftExtraction.max_num_features 24000 ^
+	--FeatureExtraction.max_image_size 4096 ^
+	--ImageReader.mask_path %MASK_PATH% ^
+	--ImageReader.camera_model OPENCV ^
+	--ImageReader.single_camera_per_folder 1
+
+colmap rig_configurator ^
+	--database_path %DBFILE% ^
+	--rig_config_path %RIG_CONFIG%
+
+colmap vocab_tree_matcher ^
+	--database_path %DBFILE% ^
+	--FeatureMatching.max_num_matches 48000 ^
+	--FeatureMatching.rig_verification 1 ^
+	--FeatureMatching.skip_image_pairs_in_same_frame 1
+
+colmap mapper ^
+	--database_path %DBFILE% ^
+	--image_path %IMAGE_PATH% ^
+	--Mapper.ba_refine_sensor_from_rig 1 ^
+	--Mapper.ba_refine_focal_length 0 ^
+	--Mapper.ba_refine_extra_params 1 ^
+	--Mapper.ba_refine_principal_point 1 ^
+	--output_path %SPARSE_DIR%
+
+pause
