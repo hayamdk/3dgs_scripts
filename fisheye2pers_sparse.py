@@ -20,6 +20,12 @@ parser.add_argument('--sparse_dir', required=True)
 
 #parser.add_argument('--threads', required=False)
 
+parser.add_argument('--generate_gps', action='store_true')
+parser.add_argument('--gps_lat_origin', type=float, default=0)
+parser.add_argument('--gps_lng_origin', type=float, default=0)
+parser.add_argument('--gps_alt_origin', type=float, default=0)
+parser.add_argument('--gps_scale', type=float, default=1000)
+
 parser.add_argument('--output_dir', required=True)
 parser.add_argument('--camera_model', required=True)
 parser.add_argument('--width', type=int, required=True)
@@ -29,6 +35,9 @@ parser.add_argument('--fov_y', type=float, required=True)
 parser.add_argument('--rotations', nargs='*', required=True)
 
 args = parser.parse_args()
+
+if args.generate_gps:
+	import gps_util
 
 fisheye_image_dir = args.image_dir
 fisheye_mask_dir = args.mask_dir
@@ -232,6 +241,19 @@ for count, img in enumerate(images, start=1):
 	print("Processing colmap sparse: [" + str(count) + "/" + str(len(images)) + "]", img.name, end="    \r")
 	f2p_image_table[img.image_id] = []
 	
+	img_rotation = Rotation.from_quat(img.quat).as_matrix()
+	if args.generate_gps:
+		img_translation = np.array(img.translation, dtype=np.float64)
+		x, y, z = np_to_list(-img_rotation.T @ img_translation)
+		lat_c = args.gps_lat_origin
+		lng_c = args.gps_lng_origin
+		alt_c = args.gps_alt_origin
+		lat, lng, alt = gps_util.xyz_to_wgs(x, y, z, (lat_c, lng_c, alt_c), scale=args.gps_scale)
+		
+		gps_ifd = gps_util.gen_gps_ifd(lat, lng, alt)
+	else:
+		gps_ifd = None
+	
 	if img.camera_id in f2p_camera_table:
 		fimg_path = os.path.join(fisheye_image_dir, img.name)
 		fimg = cv2.imread(fimg_path, cv2.IMREAD_COLOR)
@@ -285,7 +307,7 @@ for count, img in enumerate(images, start=1):
 			os.makedirs(pimg_dir, exist_ok=True)
 			#cv2.imwrite(pimg_path, pimg)
 			
-			remap_job = (fimg_path, f2p_map, cv2.INTER_LANCZOS4, pimg_path)
+			remap_job = (fimg_path, f2p_map, cv2.INTER_LANCZOS4, pimg_path, gps_ifd)
 			remap_job_list.append(remap_job)
 			
 			if fmask_path is not None:
@@ -296,10 +318,9 @@ for count, img in enumerate(images, start=1):
 				os.makedirs(pmask_dir, exist_ok=True)
 				#cv2.imwrite(pmask_path, pmask)
 				
-				remap_job = (fmask_path, f2p_map, cv2.INTER_NEAREST, pmask_path)
+				remap_job = (fmask_path, f2p_map, cv2.INTER_NEAREST, pmask_path, None)
 				remap_job_list.append(remap_job)
 			
-			img_rotation = Rotation.from_quat(img.quat).as_matrix()
 			img_rotation_p = rotation_matrix @ img_rotation
 			quat_p = np_to_list(Rotation.from_matrix(img_rotation_p).as_quat())
 			
@@ -348,12 +369,16 @@ for count, remap_job in enumerate(remap_job_list, start=1):
 	f2p_map = remap_job[1]
 	interpolation = remap_job[2]
 	pimg_path = remap_job[3]
+	gps_ifd = remap_job[4]
 	
 	print("Processing image: [" + str(count) + "/" + str(len(remap_job_list)) + "]", pimg_path, end="    \r")
 	
 	fimg = cv2.imread(fimg_path, cv2.IMREAD_COLOR)
 	pimg = cv2.remap(fimg, f2p_map, None, interpolation, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 	cv2.imwrite(pimg_path, pimg)
+	
+	if gps_ifd is not None:
+		gps_util.insert_gps(pimg_path, gps_ifd)
 
 new_frame_id = image_id
 

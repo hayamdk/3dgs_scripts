@@ -7,6 +7,12 @@ python fisheye2pers.py ^
 	--mask_dir "%DATA_DIR%\masks" ^
 	--camera_settings camera_settings.json ^
 	--output_dir "%DATA_DIR%\f2p" ^
+	--generate_gps ^
+	--gps_lat_origin 35.0 ^
+	--gps_lng_origin -135.0 ^
+	--gps_alt_origin 100.0 ^
+	--gps_scale 10 ^
+	--images_text "%DATA_DIR%\sparse\0_text\images.txt" ^
 	--camera_model OPENCV ^
 	--width 2048 ^
 	--height 2048 ^
