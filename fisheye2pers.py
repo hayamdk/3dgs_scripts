@@ -73,9 +73,9 @@ def np_to_list(nplist):
 def render_pers_images(camera_group_name, rotations, camera_params, fisheye_images_dir, mask_img_path, output_dir, fisheye_image_dirname=None, fisheye_sparse_images=None):
 	f2p_map_cache = {}
 	
-	fisheye_mask_img = None
-	#if os.path.isfile(mask_img_path):
-	#	fisheye_mask_img = cv2.imread(mask_img_path, cv2.IMREAD_COLOR)
+	fisheye_mask_img_single = None
+	if os.path.isfile(mask_img_path):
+		fisheye_mask_img_single = cv2.imread(mask_img_path, cv2.IMREAD_COLOR)
 	
 	for fisheye_img_name in os.listdir(fisheye_images_dir):
 		basename, ext = os.path.splitext(fisheye_img_name)
@@ -101,12 +101,14 @@ def render_pers_images(camera_group_name, rotations, camera_params, fisheye_imag
 		fisheye_img_path = os.path.join(fisheye_images_dir, fisheye_img_name)
 		fisheye_img = cv2.imread(fisheye_img_path, cv2.IMREAD_COLOR)
 		
-		if fisheye_mask_img is None:
+		if fisheye_mask_img_single is None:
 			if os.path.isdir(mask_img_path):
 				fisheye_mask_img_path = os.path.join(mask_img_path, fisheye_img_name + ".png")
 				fisheye_mask_img = cv2.imread(fisheye_mask_img_path, cv2.IMREAD_COLOR)
 			else:
 				raise
+		else:
+			fisheye_mask_img = fisheye_mask_img_single
 		
 		print(fisheye_img_path)
 		
