@@ -4,6 +4,7 @@ import math
 import cv2
 import numpy as np
 import argparse
+import json
 from scipy.spatial.transform import Rotation
 from concurrent.futures import ThreadPoolExecutor
 
@@ -25,6 +26,8 @@ parser.add_argument('--gps_lat_origin', type=float, default=0)
 parser.add_argument('--gps_lng_origin', type=float, default=0)
 parser.add_argument('--gps_alt_origin', type=float, default=0)
 parser.add_argument('--gps_scale', type=float, default=1000)
+
+parser.add_argument('--save_pose', action='store_true')
 
 parser.add_argument('--output_dir', required=True)
 parser.add_argument('--camera_model', required=True)
@@ -237,14 +240,21 @@ f2p_image_table = {}
 new_imgs = []
 remap_job_list = []
 
+pose_data = {}
+
 for count, img in enumerate(images, start=1):
 	print("Processing colmap sparse: [" + str(count) + "/" + str(len(images)) + "]", img.name, end="    \r")
 	f2p_image_table[img.image_id] = []
 	
 	img_rotation = Rotation.from_quat(img.quat).as_matrix()
-	if args.generate_gps:
+	if args.generate_gps or args.save_pose:
 		img_translation = np.array(img.translation, dtype=np.float64)
 		x, y, z = np_to_list(-img_rotation.T @ img_translation)
+	
+	if args.save_pose:
+		img_position = (x, y, z)
+	
+	if args.generate_gps:
 		lat_c = args.gps_lat_origin
 		lng_c = args.gps_lng_origin
 		alt_c = args.gps_alt_origin
@@ -300,6 +310,9 @@ for count, img in enumerate(images, start=1):
 				imgname_p = os.path.join(imgdir, imgname)
 			else:
 				imgname_p = img.name
+			
+			if args.save_pose:
+				pose_data[imgname_p.replace("\\", "/")] = img_position
 			
 			pimg_path = os.path.join(output_dir, "images", imgname_p)
 			#pimg = cv2.remap(fimg, f2p_map, None, cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
@@ -483,3 +496,10 @@ csu.save_rigs(new_rigs, os.path.join(images_dir, "rigs.txt"))
 
 print("Writing frames.txt")
 csu.save_frames(new_frames, os.path.join(images_dir, "frames.txt"))
+
+if args.save_pose:
+	print("Save Poses")
+	posedata_path = os.path.join(output_dir, "poses.json")
+	f = open(posedata_path, "wt")
+	json.dump(pose_data, f, indent=4)
+	f.close()

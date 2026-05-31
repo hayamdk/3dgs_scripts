@@ -1,4 +1,4 @@
-set DATA_DIR=D:\path_to_data
+set DATA_DIR=D:\path\to\data
 
 cd /D %~dp0
 
@@ -7,6 +7,7 @@ python fisheye2pers.py ^
 	--mask_dir "%DATA_DIR%\masks" ^
 	--camera_settings camera_settings.json ^
 	--output_dir "%DATA_DIR%\f2p" ^
+	--save_pose ^
 	--generate_gps ^
 	--gps_lat_origin 35.0 ^
 	--gps_lng_origin -135.0 ^

@@ -25,6 +25,8 @@ parser.add_argument('--gps_lng_origin', type=float, default=0)
 parser.add_argument('--gps_alt_origin', type=float, default=0)
 parser.add_argument('--gps_scale', type=float, default=1000)
 
+parser.add_argument('--save_pose', action='store_true')
+
 parser.add_argument('--images_text', default=None)
 
 parser.add_argument('--output_dir', required=True)
@@ -70,7 +72,7 @@ def np_to_list(nplist):
         pylist.append(float(val))
     return pylist
 
-def render_pers_images(camera_group_name, rotations, camera_params, fisheye_images_dir, mask_img_path, output_dir, fisheye_image_dirname=None, fisheye_sparse_images=None):
+def render_pers_images(camera_group_name, rotations, camera_params, fisheye_images_dir, mask_img_path, output_dir, fisheye_sparse_images=None, pose_data=None):
 	f2p_map_cache = {}
 	
 	fisheye_mask_img_single = None
@@ -82,21 +84,25 @@ def render_pers_images(camera_group_name, rotations, camera_params, fisheye_imag
 		if ext.lower() not in img_exts:
 			continue
 		
-		if args.generate_gps:
-			fimg_name = fisheye_image_dirname + "/" + fisheye_img_name
+		if args.generate_gps or args.save_pose:
+			fimg_name = camera_group_name + "/" + fisheye_img_name
 			fimg = fisheye_sparse_images[fimg_name.lower().replace("\\", "/")]
 			
 			img_rotation = Rotation.from_quat(fimg.quat).as_matrix()
 			image_translation = np.array(fimg.translation, dtype=np.float64)
 			
 			x, y, z = np_to_list(-img_rotation.T @ image_translation)
-			lat_c = args.gps_lat_origin
-			lng_c = args.gps_lng_origin
-			alt_c = args.gps_alt_origin
-			lat, lng, alt = gps_util.xyz_to_wgs(x, y, z, (lat_c, lng_c, alt_c), scale=args.gps_scale)
 			
-			gps_ifd = gps_util.gen_gps_ifd(lat, lng, alt)
-			#print(fimg_name, (x, y, z), lat, lng, alt)
+			if args.generate_gps:
+				lat_c = args.gps_lat_origin
+				lng_c = args.gps_lng_origin
+				alt_c = args.gps_alt_origin
+				lat, lng, alt = gps_util.xyz_to_wgs(x, y, z, (lat_c, lng_c, alt_c), scale=args.gps_scale)
+				
+				gps_ifd = gps_util.gen_gps_ifd(lat, lng, alt)
+				#print(fimg_name, (x, y, z), lat, lng, alt)
+			if args.save_pose:
+				img_position = (x, y, z)
 		
 		fisheye_img_path = os.path.join(fisheye_images_dir, fisheye_img_name)
 		fisheye_img = cv2.imread(fisheye_img_path, cv2.IMREAD_COLOR)
@@ -135,6 +141,9 @@ def render_pers_images(camera_group_name, rotations, camera_params, fisheye_imag
 			
 			if args.generate_gps:
 				gps_util.insert_gps(image_path, gps_ifd)
+			if args.save_pose:
+				imgname = camera_group_name + "_" + str(yaw) + "_" + str(pitch) + "/" + fisheye_img_name
+				pose_data[imgname] = {"position": img_position}
 			
 			#mask_persp_img = cv2.remap(fisheye_mask_img, f2p_map, None, cv2.INTER_LANCZOS4, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
 			mask_persp_img = cv2.remap(fisheye_mask_img, f2p_map, None, cv2.INTER_NEAREST, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
@@ -249,14 +258,24 @@ def perspective_rig_cameras(rig_setting):
 
 rig_config = []
 
-if args.generate_gps:
+if args.generate_gps or args.save_pose:
 	import gps_util
 	import colmap_sparse_util as csu
 	
+	if args.images_text is None:
+		raise
+	
 	print("Reading images.txt")
-	images = {}
+	fisheye_sparse_images = {}
 	for image in csu.read_images(args.images_text):
-		images[image.name.lower().replace("\\", "/")] = image
+		fisheye_sparse_images[image.name.lower().replace("\\", "/")] = image
+else:
+	fisheye_sparse_images = None
+
+if args.save_pose:
+	pose_data = {}
+else:
+	pose_data = None
 
 for rig in cam_settings:
 	rig_cameras = perspective_rig_cameras(rig)
@@ -275,30 +294,25 @@ for rig in cam_settings:
 		camera_image_dir = os.path.join(args.image_dir, camera["name"])
 		camera_mask_dir = os.path.join(args.mask_dir, camera["name"])
 		
-		if args.generate_gps:
-			render_pers_images(
-					camera["name"],
-					rotations,
-					camera_params,
-					camera_image_dir,
-					camera_mask_dir,
-					args.output_dir,
-					fisheye_image_dirname = camera["name"],
-					fisheye_sparse_images = images
-				)
-		else:
-			render_pers_images(
-					camera["name"],
-					rotations,
-					camera_params,
-					camera_image_dir,
-					camera_mask_dir,
-					args.output_dir
-				)
+		render_pers_images(
+				camera["name"],
+				rotations,
+				camera_params,
+				camera_image_dir,
+				camera_mask_dir,
+				args.output_dir,
+				fisheye_sparse_images = fisheye_sparse_images,
+				pose_data = pose_data,
+			)
 
 rigconfig_path = os.path.join(args.output_dir, "rig_config.json")
 f = open(rigconfig_path, "wt")
 json.dump(rig_config, f)
 f.close()
-
 print(rig_cameras)
+
+if args.save_pose:
+	posedata_path = os.path.join(args.output_dir, "poses.json")
+	f = open(posedata_path, "wt")
+	json.dump(pose_data, f, indent=4)
+	f.close()

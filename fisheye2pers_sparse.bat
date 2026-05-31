@@ -1,4 +1,4 @@
-set DATA_DIR=D:\path_to_data
+set DATA_DIR=D:\path\to\data
 
 cd /D %~dp0
 
@@ -12,6 +12,7 @@ python fisheye2pers_sparse.py ^
 	--gps_lng_origin -135.0 ^
 	--gps_alt_origin 100.0 ^
 	--gps_scale 10 ^
+	--save_pose ^
 	--camera_model OPENCV ^
 	--width 2048 ^
 	--height 2048 ^
