@@ -13,7 +13,7 @@ colmap feature_extractor ^
 	--image_path %IMAGE_PATH% ^
 	--FeatureExtraction.type ALIKED_N16ROT ^
 	--ImageReader.mask_path %MASK_PATH% ^
-	--ImageReader.camera_model OPENCV_FISHEYE ^
+	--ImageReader.camera_model THIN_PRISM_FISHEYE ^
 	--ImageReader.single_camera_per_folder 1
 
 colmap rig_configurator ^

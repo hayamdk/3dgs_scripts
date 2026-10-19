@@ -15,7 +15,7 @@ colmap feature_extractor ^
 	--FeatureExtraction.max_image_size 1920 ^
 	--AlikedExtraction.max_num_features 16384 ^
 	--ImageReader.mask_path %MASK_PATH% ^
-	--ImageReader.camera_model OPENCV_FISHEYE ^
+	--ImageReader.camera_model THIN_PRISM_FISHEYE ^
 	--ImageReader.single_camera_per_folder 1
 
 colmap rig_configurator ^

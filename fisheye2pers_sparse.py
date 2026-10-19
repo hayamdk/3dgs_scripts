@@ -117,7 +117,7 @@ camera_id = 1
 new_cameras = []
 
 for cam in cameras.values():
-	if cam.model == "OPENCV_FISHEYE":
+	if cam.model == "OPENCV_FISHEYE" or "THIN_PRISM_FISHEYE":
 		f2p_camera_table[cam.camera_id] = {}
 		
 		for rotation in rotations:
@@ -208,7 +208,7 @@ for rig in rigs:
 			rotation_matrix = fisheye_util.make_rotation_matrix(yaw, pitch, inverse=True)
 			
 			new_rotation_matrix_from_ref = rotation_matrix @ sub_rotation_matrix_from_ref
-			new_translation_from_ref = rotation_matrix @ sub_rotation_matrix @ sub_translation
+			new_translation_from_ref = rotation_matrix @ sub_translation
 			
 			new_sub_sensor = csu.ColmapRigSensor(
 				sensor_type = "CAMERA",
@@ -234,6 +234,7 @@ for rig in rigs:
 f2p_maps = {}
 rotation_cache = {}
 dedistortion_funcs = {}
+f2p_coord_funcs = {}
 image_id = 1
 
 f2p_image_table = {}
@@ -243,7 +244,7 @@ remap_job_list = []
 pose_data = {}
 
 for count, img in enumerate(images, start=1):
-	print("Processing colmap sparse: [" + str(count) + "/" + str(len(images)) + "]", img.name, end="    \r")
+	print("Reprojecting 2Dpoints: [" + str(count) + "/" + str(len(images)) + "]", img.name, end="    \r")
 	f2p_image_table[img.image_id] = []
 	
 	img_rotation = Rotation.from_quat(img.quat).as_matrix()
@@ -291,15 +292,29 @@ for count, img in enumerate(images, start=1):
 				f2p_map = f2p_maps[f2p_map_key]
 			else:
 				cam = cameras[img.camera_id]
-				f2p_map = fisheye_util.make_f2p_map(width, height, fov_x, fov_y, yaw, pitch, cam.params)
+				if cam.model == "OPENCV_FISHEYE":
+					f2p_map = fisheye_util.make_f2p_map(width, height, fov_x, fov_y, yaw, pitch, cam.params)
+				elif cam.model == "THIN_PRISM_FISHEYE":
+					f2p_map = fisheye_util.make_f2p_map_thin_prism(width, height, fov_x, fov_y, yaw, pitch, cam.params)
+				else:
+					raise
 				print("Made fisheye to pers map: camera_id=", img.camera_id, ", rotation= (" + str(yaw) + "," + str(pitch) + ")   ")
 				f2p_maps[f2p_map_key] = f2p_map
 			
-			if f2p_map_key in dedistortion_funcs:
-				dedistortion_func = dedistortion_funcs[f2p_map_key]
+			if cam.model == "OPENCV_FISHEYE":
+				if img.camera_id in dedistortion_funcs:
+					dedistortion_func = dedistortion_funcs[img.camera_id]
+				else:
+					dedistortion_func = fisheye_util.make_dedistortion_func_interp(cam.params)
+					dedistortion_funcs[img.camera_id] = dedistortion_func
+			elif cam.model == "THIN_PRISM_FISHEYE":
+				if img.camera_id in f2p_coord_funcs:
+					f2p_coord_func = f2p_coord_funcs[img.camera_id]
+				else:
+					f2p_coord_func = fisheye_util.make_f2p_coord_func_thin_prism(cam.params)
+					f2p_coord_funcs[img.camera_id] = f2p_coord_func
 			else:
-				dedistortion_func = fisheye_util.make_dedistortion_func_interp(cam.params)
-				dedistortion_funcs[f2p_map_key] = dedistortion_func
+				raise
 			
 			spl_path = split_path_r(img.name)
 			if len(spl_path) > 1:
@@ -352,15 +367,27 @@ for count, img in enumerate(images, start=1):
 			image_id += 1
 			
 			for point2d in img.points2d:
-				xy_pers = fisheye_util.f2p_coord(
-						point2d.x, point2d.y,
-						width, height,
-						fov_x, fov_y,
-						yaw, pitch,
-						cam.params, #not used
-						dedistortion_func=dedistortion_func,
-						rotation_matrix=rotation_matrix
-					)
+				if cam.model == "OPENCV_FISHEYE":
+					xy_pers = fisheye_util.f2p_coord(
+							point2d.x, point2d.y,
+							width, height,
+							fov_x, fov_y,
+							yaw, pitch,
+							cam.params, #not used
+							dedistortion_func=dedistortion_func,
+							rotation_matrix=rotation_matrix
+						)
+				elif cam.model == "THIN_PRISM_FISHEYE":
+					xy_pers = f2p_coord_func(
+							point2d.x, point2d.y,
+							width, height,
+							fov_x, fov_y,
+							yaw, pitch,
+							cam.params,
+							rotation_matrix=rotation_matrix
+						)
+				else:
+					raise
 				
 				if xy_pers is None:
 					continue
