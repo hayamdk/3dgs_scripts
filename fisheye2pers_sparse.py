@@ -5,6 +5,8 @@ import cv2
 import numpy as np
 import argparse
 import json
+import dataclasses
+import shutil
 from scipy.spatial.transform import Rotation
 from concurrent.futures import ThreadPoolExecutor
 
@@ -12,6 +14,7 @@ script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(script_dir, "utils"))
 
 import fisheye_util
+import undistortion_util
 import colmap_sparse_util as csu
 
 parser = argparse.ArgumentParser()
@@ -113,11 +116,14 @@ def split_path_r(filepath):
 
 
 f2p_camera_table = {}
+distorted_camera_table = {}
+pass_camera_table = {}
+
 camera_id = 1
 new_cameras = []
 
 for cam in cameras.values():
-	if cam.model == "OPENCV_FISHEYE" or "THIN_PRISM_FISHEYE":
+	if cam.model == "OPENCV_FISHEYE" or cam.model == "THIN_PRISM_FISHEYE":
 		f2p_camera_table[cam.camera_id] = {}
 		
 		for rotation in rotations:
@@ -127,17 +133,17 @@ for cam in cameras.values():
 			fy = height / 2.0 / math.tan(math.radians(fov_y / 2.0))
 			
 			if pers_camera_model == "SIMPLE_PINHOLE":
-				if fov_x != fov_y:
+				if fx != fy:
 					raise
 				params = [fx, width / 2.0, height / 2.0]
 			elif pers_camera_model == "PINHOLE":
 				params = [fx, fy, width / 2.0, height / 2.0]
 			elif pers_camera_model == "SIMPLE_RADIAL":
-				if fov_x != fov_y:
+				if fx != fy:
 					raise
 				params = [fx, width / 2.0, height / 2.0, 0]
 			elif pers_camera_model == "RADIAL":
-				if fov_x != fov_y:
+				if fx != fy:
 					raise
 				params = [fx, width / 2.0, height / 2.0, 0, 0]
 			elif pers_camera_model == "OPENCV":
@@ -159,17 +165,74 @@ for cam in cameras.values():
 			camera_id += 1
 			new_cameras.append(new_cam)
 			
+			#print("cam.camera_id", cam.camera_id)
 			f2p_camera_table[cam.camera_id][rotation] = new_cam
-	else:
-		new_cam = dataclasses.replace(cam, camera_id=camera_id)
+	elif cam.model == "OPENCV" or cam.model == "FULL_OPENCV":
+		if cam.model == "FULL_OPENCV":
+			full_opencv = True
+		else:
+			full_opencv = False
+		
+		fx_p = cam.params[0]
+		fy_p = fx_p
+		d2p_ratio = undistortion_util.calc_undistortion_ratio_opencv(cam.width, cam.height, fx_p, fy_p, cam.params, full_opencv)
+		
+		width_p = math.ceil(cam.width * d2p_ratio / 2) * 2
+		height_p = math.ceil(cam.height * d2p_ratio / 2) * 2
+		
+		if pers_camera_model == "SIMPLE_PINHOLE":
+			params = [fx_p, width_p / 2.0, height_p / 2.0]
+		elif pers_camera_model == "PINHOLE":
+			params = [fx_p, fy_p, width_p / 2.0, height_p / 2.0]
+		elif pers_camera_model == "SIMPLE_RADIAL":
+			params = [fx_p, width_p / 2.0, height_p / 2.0, 0]
+		elif pers_camera_model == "RADIAL":
+			params = [fx_p, width_p / 2.0, height_p / 2.0, 0, 0]
+		elif pers_camera_model == "OPENCV":
+			params = [fx_p, fy_p, width_p / 2.0, height_p / 2.0, 0, 0, 0, 0]
+		elif pers_camera_model == "FULL_OPENCV":
+			params = [fx_p, fy_p, width_p / 2.0, height_p / 2.0, 0, 0, 0, 0, 0, 0, 0, 0]
+		else:
+			#unknown model
+			raise
+		
+		new_cam = csu.ColmapCamera(
+					camera_id = camera_id,
+					model = pers_camera_model,
+					width = width_p,
+					height = height_p,
+					params = params,
+				)
+		
 		new_cameras.append(new_cam)
 		camera_id += 1
+		distorted_camera_table[cam.camera_id] = new_cam
+	else:
+		new_cam = dataclasses.replace(cam, camera_id=camera_id)
+		print("new_cam", new_cam)
+		new_cameras.append(new_cam)
+		camera_id += 1
+		pass_camera_table[cam.camera_id] = new_cam
 
 new_rigs = []
-f2p_rig_table = {}
+rig_table = {}
 rig_id = camera_id
 
 for rig in rigs:
+	if rig.ref_sensor_id in distorted_camera_table | pass_camera_table:
+		new_cam = (distorted_camera_table | pass_camera_table)[rig.ref_sensor_id]
+		new_rig = csu.ColmapRig(
+				rig_id = rig_id,
+				ref_sensor_type = rig.ref_sensor_type,
+				ref_sensor_id = new_cam.camera_id,
+				sub_sensors = []
+			)
+		new_rigs.append(new_rig)
+		rig_table[rig.rig_id] = new_rig
+		
+		rig_id += 1
+		continue
+	
 	new_cameras_d = f2p_camera_table[rig.ref_sensor_id]
 	rotations = list(new_cameras_d.keys())
 	new_ref_sensor_id = new_cameras_d[rotations[0]].camera_id
@@ -227,25 +290,30 @@ for rig in rigs:
 			sub_sensors = new_sub_sensors
 		)
 	new_rigs.append(new_rig)
-	f2p_rig_table[rig.rig_id] = new_rig
+	rig_table[rig.rig_id] = new_rig
 	
 	rig_id += 1
 
 f2p_maps = {}
 rotation_cache = {}
-dedistortion_funcs = {}
+f2p_undistortion_funcs = {}
 f2p_coord_funcs = {}
+
+d2p_maps = {}
+d2p_coord_funcs = {}
+
 image_id = 1
 
-f2p_image_table = {}
+image_table = {}
 new_imgs = []
 remap_job_list = []
+copy_imgage_list = []
 
 pose_data = {}
 
 for count, img in enumerate(images, start=1):
 	print("Reprojecting 2Dpoints: [" + str(count) + "/" + str(len(images)) + "]", img.name, end="    \r")
-	f2p_image_table[img.image_id] = []
+	image_table[img.image_id] = []
 	
 	img_rotation = Rotation.from_quat(img.quat).as_matrix()
 	if args.generate_gps or args.save_pose:
@@ -267,7 +335,7 @@ for count, img in enumerate(images, start=1):
 	
 	if img.camera_id in f2p_camera_table:
 		fimg_path = os.path.join(fisheye_image_dir, img.name)
-		fimg = cv2.imread(fimg_path, cv2.IMREAD_COLOR)
+		#fimg = cv2.imread(fimg_path, cv2.IMREAD_COLOR)
 		
 		fmask_path = None
 		if fisheye_mask_dir is not None:
@@ -302,11 +370,11 @@ for count, img in enumerate(images, start=1):
 				f2p_maps[f2p_map_key] = f2p_map
 			
 			if cam.model == "OPENCV_FISHEYE":
-				if img.camera_id in dedistortion_funcs:
-					dedistortion_func = dedistortion_funcs[img.camera_id]
+				if img.camera_id in f2p_undistortion_funcs:
+					undistortion_func = f2p_undistortion_funcs[img.camera_id]
 				else:
-					dedistortion_func = fisheye_util.make_dedistortion_func_interp(cam.params)
-					dedistortion_funcs[img.camera_id] = dedistortion_func
+					undistortion_func = fisheye_util.make_dedistortion_func_interp(cam.params)
+					f2p_undistortion_funcs[img.camera_id] = undistortion_func
 			elif cam.model == "THIN_PRISM_FISHEYE":
 				if img.camera_id in f2p_coord_funcs:
 					f2p_coord_func = f2p_coord_funcs[img.camera_id]
@@ -374,7 +442,7 @@ for count, img in enumerate(images, start=1):
 							fov_x, fov_y,
 							yaw, pitch,
 							cam.params, #not used
-							dedistortion_func=dedistortion_func,
+							dedistortion_func=undistortion_func,
 							rotation_matrix=rotation_matrix
 						)
 				elif cam.model == "THIN_PRISM_FISHEYE":
@@ -402,7 +470,103 @@ for count, img in enumerate(images, start=1):
 				
 			
 			new_imgs.append(img_p)
-			f2p_image_table[img.image_id].append(img_p)
+			image_table[img.image_id].append(img_p)
+	
+	elif img.camera_id in distorted_camera_table:
+		cam = cameras[img.camera_id]
+		new_cam = distorted_camera_table[img.camera_id]
+		
+		if img.camera_id in d2p_maps:
+			d2p_map, d2p_coord_func = d2p_maps[img.camera_id]
+		else:
+			new_fx = new_cam.params[0]
+			new_fy = new_cam.params[1]
+			if cam.model == "OPENCV":
+				d2p_map = undistortion_util.make_undistortion_map_opencv(new_cam.width, new_cam.height, new_fx, new_fy, cam.params, full=False)
+				d2p_coord_func = undistortion_util.make_undistort_coord_func(new_cam.width, new_cam.height, new_fx, new_fy, cam.params, full=False)
+			elif cam.model == "FULL_OPENCV":
+				d2p_map = undistortion_util.make_undistortion_map_opencv(new_cam.width, new_cam.height, new_fx, new_fy, cam.params, full=True)
+				d2p_coord_func = undistortion_util.make_undistort_coord_func(new_cam.width, new_cam.height, new_fx, new_fy, cam.params, full=True)
+			else:
+				raise
+			
+			print("Made undistortion map: camera_id=", img.camera_id, "   ")
+			d2p_maps[img.camera_id] = (d2p_map, d2p_coord_func)
+		
+		new_img = csu.ColmapImage(
+				image_id,
+				img.quat,
+				img.translation,
+				distorted_camera_table[img.camera_id].camera_id,
+				img.name,
+				[]
+			)
+		
+		image_id += 1
+		
+		for point2d in img.points2d:
+			xy_pers = d2p_coord_func(point2d.x, point2d.y, width_p, height_p, new_fx, new_fy)
+			
+			if xy_pers is None:
+				continue
+			
+			x_pers = xy_pers[0]
+			y_pers = xy_pers[1]
+			if x_pers < 0.0 or width_p <= x_pers or y_pers < 0.0 or height_p <= y_pers:
+				continue
+			
+			point2d_p = csu.ColmapImagePoint2D(x_pers, y_pers, point2d.point3d_id)
+			new_img.points2d.append(point2d_p)
+		
+		new_imgs.append(new_img)
+		image_table[img.image_id].append(new_img)
+		
+		dimg_path = os.path.join(fisheye_image_dir, img.name)
+		pimg_path = os.path.join(output_dir, "images", img.name)
+		pimg_dir = os.path.dirname(pimg_path)
+		os.makedirs(pimg_dir, exist_ok=True)
+		
+		remap_job = (dimg_path, d2p_map, cv2.INTER_LANCZOS4, pimg_path, gps_ifd)
+		remap_job_list.append(remap_job)
+		
+		if fisheye_mask_dir is not None:
+			dmask_path = os.path.join(fisheye_mask_dir, img.name + ".png")
+			pmask_path = os.path.join(output_dir, "masks", img.name + ".png")
+			
+			pmask_dir = os.path.dirname(pmask_path)
+			os.makedirs(pmask_dir, exist_ok=True)
+			
+			remap_job = (dmask_path, d2p_map, cv2.INTER_NEAREST, pmask_path, None)
+			remap_job_list.append(remap_job)
+	
+	elif img.camera_id in pass_camera_table:
+		new_img = csu.ColmapImage(
+				image_id,
+				img.quat,
+				img.translation,
+				pass_camera_table[img.camera_id].camera_id,
+				img.name,
+				img.points2d
+			)
+		
+		image_id += 1
+		
+		new_imgs.append(new_img)
+		image_table[img.image_id].append(new_img)
+		
+		img_path = os.path.join(fisheye_image_dir, img.name)
+		copy_img_path = os.path.join(output_dir, "images", img.name)
+		copy_img_dir = os.path.dirname(copy_img_path)
+		os.makedirs(copy_img_dir, exist_ok=True)
+		copy_imgage_list.append((img_path, copy_img_path, gps_ifd))
+		
+		if fisheye_mask_dir is not None:
+			mask_path = os.path.join(fisheye_mask_dir, img.name + ".png")
+			copy_mask_path = os.path.join(output_dir, "masks", img.name + ".png")
+			
+			copy_mask_dir = os.path.dirname(copy_mask_path)
+			os.makedirs(copy_mask_dir, exist_ok=True)
+			copy_imgage_list.append((mask_path, copy_mask_path, None))
 	
 for count, remap_job in enumerate(remap_job_list, start=1):
 	fimg_path = remap_job[0]
@@ -420,17 +584,48 @@ for count, remap_job in enumerate(remap_job_list, start=1):
 	if gps_ifd is not None:
 		gps_util.insert_gps(pimg_path, gps_ifd)
 
+for count, copy_job in enumerate(copy_imgage_list, start=1):
+	img_path = copy_job[0]
+	copy_img_path = copy_job[1]
+	gps_ifd = copy_job[2]
+	
+	print("Copying image: [" + str(count) + "/" + str(len(copy_imgage_list)) + "]", img_path, end="    \r")
+	shutil.copy(img_path, copy_img_path)
+	
+	if gps_ifd is not None:
+		gps_util.insert_gps(copy_img_path, gps_ifd)
+
 new_frame_id = image_id
 
 new_frames = []
 for frame in frames:
 	ref_img = None
-	new_rig = f2p_rig_table[frame.rig_id]
+	new_rig = rig_table[frame.rig_id]
 	data_ids = []
 	
 	sub_sensor_idx = 0
 	for imgdata in frame.data_ids:
-		for new_img in f2p_image_table[imgdata.data_id]:
+		#if imgdata.data_id in pass_camera_table:
+		if False:
+			data_id = csu.ColmapFrameDataID(
+					sensor_type = new_rig.ref_sensor_type,
+					sensor_id = new_rig.ref_sensor_id,
+					data_id = new_img.image_id
+				)
+			
+			new_frame = csu.ColmapFrame(
+					frame_id = new_frame_id,
+					rig_id = new_rig.rig_id,
+					rig_from_world_quat = new_img.quat,
+					rig_from_world_translation = new_img.translation,
+					data_ids = [data_id]
+				)
+			new_frame_id += 1
+			
+			new_frames.append(new_frame)
+			continue
+		
+		for new_img in image_table[imgdata.data_id]:
 			if ref_img is None:
 				ref_img = new_img
 				data_id = csu.ColmapFrameDataID(
@@ -451,6 +646,8 @@ for frame in frames:
 			data_ids.append(data_id)
 	
 	if ref_img is None:
+		print("imgdata.data_id", imgdata.data_id)
+		print("image_table[imgdata.data_id]", image_table[imgdata.data_id])
 		raise
 	
 	new_frame = csu.ColmapFrame(
