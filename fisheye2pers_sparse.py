@@ -646,8 +646,8 @@ for frame in frames:
 			if ref_img is None:
 				ref_img = new_img
 				data_id = csu.ColmapFrameDataID(
-						sensor_type = new_rig.ref_sensor_type,
-						sensor_id = new_rig.ref_sensor_id,
+						sensor_type = "CAMERA",
+						sensor_id = new_img.camera_id,
 						data_id = new_img.image_id
 					)
 			else:
@@ -655,8 +655,8 @@ for frame in frames:
 				sub_sensor_idx += 1
 				
 				data_id = csu.ColmapFrameDataID(
-						sensor_type = sub_sensor.sensor_type,
-						sensor_id = sub_sensor.sensor_id,
+						sensor_type = "CAMERA",
+						sensor_id = new_img.camera_id,
 						data_id = new_img.image_id
 					)
 			
