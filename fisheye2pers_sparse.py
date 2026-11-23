@@ -8,7 +8,7 @@ import json
 import dataclasses
 import shutil
 from scipy.spatial.transform import Rotation
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.append(os.path.join(script_dir, "utils"))
@@ -22,7 +22,7 @@ parser.add_argument('--image_dir', required=True)
 parser.add_argument('--mask_dir', required=True)
 parser.add_argument('--sparse_dir', required=True)
 
-#parser.add_argument('--threads', required=False)
+parser.add_argument('--threads', type=int, required=False, default=-1)
 
 parser.add_argument('--generate_gps', action='store_true')
 parser.add_argument('--gps_lat_origin', type=float, default=0)
@@ -51,9 +51,11 @@ fisheye_sparse_dir = args.sparse_dir
 
 output_dir = args.output_dir
 
-#threads = args.threads
-#if threads == -1:
-#	threads = os.process_cpu_count()
+threads = args.threads
+if threads == -1:
+	threads = os.process_cpu_count()
+	if threads > 8:
+		threads = 8
 
 pers_camera_model = args.camera_model
 width = args.width
@@ -567,15 +569,13 @@ for count, img in enumerate(images, start=1):
 			copy_mask_dir = os.path.dirname(copy_mask_path)
 			os.makedirs(copy_mask_dir, exist_ok=True)
 			copy_imgage_list.append((mask_path, copy_mask_path, None))
-	
-for count, remap_job in enumerate(remap_job_list, start=1):
+
+def process_remap_job(remap_job):
 	fimg_path = remap_job[0]
 	f2p_map = remap_job[1]
 	interpolation = remap_job[2]
 	pimg_path = remap_job[3]
 	gps_ifd = remap_job[4]
-	
-	print("Processing image: [" + str(count) + "/" + str(len(remap_job_list)) + "]", pimg_path, end="    \r")
 	
 	fimg = cv2.imread(fimg_path, cv2.IMREAD_COLOR)
 	pimg = cv2.remap(fimg, f2p_map, None, interpolation, borderMode=cv2.BORDER_CONSTANT, borderValue=0)
@@ -583,6 +583,23 @@ for count, remap_job in enumerate(remap_job_list, start=1):
 	
 	if gps_ifd is not None:
 		gps_util.insert_gps(pimg_path, gps_ifd)
+	
+	return pimg_path
+
+if threads <= 1:
+	for count, remap_job in enumerate(remap_job_list, start=1):
+		pimg_path = process_remap_job(remap_job)
+		print("Processing image: [" + str(count) + "/" + str(len(remap_job_list)) + "]", pimg_path, end="    \r")
+else:
+	executor = ThreadPoolExecutor(max_workers=threads)
+	try:
+		futures = [executor.submit(process_remap_job, job) for job in remap_job_list]
+		for count, future in enumerate(as_completed(futures), start=1):
+			pimg_path = future.result()
+			print("Processing image(MT): [" + str(count) + "/" + str(len(remap_job_list)) + "]", pimg_path, end="    \r")
+	except:
+		executor.shutdown(wait=False, cancel_futures=True)
+		raise
 
 for count, copy_job in enumerate(copy_imgage_list, start=1):
 	img_path = copy_job[0]
